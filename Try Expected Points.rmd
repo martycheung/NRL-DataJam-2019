@@ -1,0 +1,168 @@
+---
+title: "NRL DataJam 2019 - Try Probability"
+output: html_notebook
+---
+
+## Try Probability 1st Pass
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(data.table)
+
+
+```
+
+
+```{r}
+
+df_trx <- read_delim('C:\\Users\\martin.cheung\\OneDrive - Accenture\\NRL DataJam 2019\\data/2019 Event Data/trxs.txt',delim='\t')
+
+df_trx %>% head()
+
+```
+
+#### Have a look at where the sets start in 1 game
+- In the data, at the start of the half, the kickoff and subsequent kick chase seems to be counted as a set, so make sure we remove that from potential try-scoring sets  
+- The sets seem to start where event name is 'Start set complete ...' or 'Start set incomplete ...'  
+
+
+```{r}
+
+df_trx %>% filter(MatchId==18111011) %>% filter(EventName %like% 'Start set complete' | EventName %like% 'Start set incomplete') 
+
+```
+
+#### How many matches are there?
+
+```{r}
+
+cat('Total matches over 2018-2019:',length(unique(df_trx$MatchId)))
+
+```
+
+#### How many total sets in each match?
+
+```{r}
+
+all_sets <- df_trx %>% 
+  filter(EventName %like% 'Start set complete' | EventName %like% 'Start set incomplete') 
+
+print(nrow(all_sets))
+
+```
+
+30,008 sets in last 2 seasons
+
+#### How many sets per match?
+
+```{r}
+# Sets per match
+all_sets %>% group_by(MatchId) %>% 
+  summarise(sets_per_match = n())
+```
+
+
+#### What's the average number of sets per match (both teams combined)?
+
+```{r}
+
+# Average for all matches (both teams)
+mean((all_sets %>% group_by(MatchId) %>% 
+  summarise(sets_per_match = n()))$sets_per_match)
+
+```
+
+#### Get every set of 6 in every match
+- Every set of 6
+- Extract X-Y coordinates at start of set - use XmPossession, YmPossession (normalised to team with posession during set)
+- Extract result of set (Try or Not) - every important detail about the set is encoded in the row where eventname = 'start set complete/incomplete'
+  - Qualifier3 gives the set outcome (try, turnover, kick, penalty etc)
+  - use Qualifier1 to get possession source (eg. if it started from a penalty)
+
+#### What's the result of a set of 6?
+
+```{r}
+
+data.frame(table(all_sets$Qualifier3),prop.table(table(all_sets$Qualifier3)))
+
+```
+
+- 9% of all sets result in a Try  
+- 65% of sets end in a kick, 18% of sets end in a tackle turnover  
+
+
+
+#### Let's look at probability of Try all teams for different areas of the field
+- XmPossession, YmPossession (normalised to team with posession during set)
+- group by ZonePossession, ChannelPosession and SectionPosession
+
+```{r}
+
+prob_per_zone = all_sets %>% 
+  group_by(ZonePossession,ChannelPossession,SectionPossession) %>%
+  summarise(num_sets = n(),
+            zone_prob = sum(Qualifier3 =='Try')/n())
+
+# Correct an error in section numbers
+prob_per_zone <- prob_per_zone %>% 
+  mutate(SectionPossession = ifelse(ZonePossession %in% seq(78,84), '-110',SectionPossession))
+
+prob_per_zone <- prob_per_zone %>% ungroup() %>% 
+  mutate(SectionPossession=as.factor(SectionPossession),
+         ChannelPossession=as.factor(ChannelPossession))
+
+prob_per_zone
+
+```
+
+#### Scatterplot of where sets start
+- plot doesn't tell us a whole lot
+
+```{r}
+
+ggplot(all_sets,aes(x= XmPossession,y=YmPossession,color=Qualifier3)) + geom_point(alpha=0.3)
+
+```
+
+#### Heatmap of try probability by zone  
+
+```{r}
+ord_channels <- c("SL","NL","L","C","R","NR","SR")
+ord_sections <- c("IG-", "-10", "-20","-30","-40","-50","-60","-70","-80","-90", "-100","-110")
+
+prob_per_zone$SectionPossession <- factor(prob_per_zone$SectionPossession, levels = ord_sections,ordered = T)
+prob_per_zone$ChannelPossession <- factor(prob_per_zone$ChannelPossession, levels = ord_channels,ordered = T)
+
+ggplot(prob_per_zone,aes(x= SectionPossession,y=ChannelPossession)) + 
+  geom_tile(aes(fill = zone_prob)) +scale_fill_continuous(high = "#132B43", low = "#56B1F7")+
+  geom_text(aes(label = round(zone_prob, 2)))
+
+```
+
+- Note: Need to double check that the zones and sections have been normalised properly
+
+#### Total Number of Sets by Zone
+
+```{r}
+
+ggplot(prob_per_zone,aes(x= SectionPossession,y=ChannelPossession)) + 
+  geom_tile(aes(fill = num_sets)) +scale_fill_continuous(high = "#132B43", low = "#56B1F7")+
+  geom_text(aes(label = num_sets))
+
+```
+ 
+#### Save datasets/outputs
+
+```{r}
+
+all_sets %>% write_csv("C:\\Users\\martin.cheung\\OneDrive - Accenture\\NRL DataJam 2019\\output\\sets_outcomes.csv")
+
+prob_per_zone %>% write_csv("C:\\Users\\martin.cheung\\OneDrive - Accenture\\NRL DataJam 2019\\output\\try_prob_per_zone.csv")
+
+```
+
+
+
