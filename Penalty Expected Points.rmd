@@ -1,0 +1,334 @@
+---
+title: "NRL DataJam 2019 - Penalty Probability"
+output: html_notebook
+---
+
+## Penalty Probability 1st Pass
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(data.table)
+
+
+```
+
+
+```{r}
+
+df_trx <- read_delim('C:\\Users\\martin.cheung\\OneDrive - Accenture\\NRL DataJam 2019\\data/2019 Event Data/trxs.txt',delim='\t')
+
+# df_trx %>% head()
+
+```
+
+#### Check out one game
+
+```{r}
+
+df_trx %>% filter(MatchId==18111011)
+
+```
+
+#### How many matches are there?
+
+```{r}
+
+cat('Total matches over 2018-2019:',length(unique(df_trx$MatchId)))
+
+```
+
+#### Subset only events where the penalty occurred and a decision was made  
+- EventName contains 'Penalised', contains qualifier2name 'Taking penalty decision'  
+- Qualifier2 contains the decision (ie. take penalty goal, kick for touch or tap)  
+- Use OppositionID for penalty decision - since this event refers to the team that conceded the penalty  
+
+#### High Level stats over all matches
+
+```{r}
+
+all_penalties = df_trx %>% 
+  filter(EventName %like% 'Penalised')
+
+print(nrow(all_penalties))
+
+```
+
+5900 penalty decisions made in entire last 2 seasons
+
+#### How many penalties per match?
+
+```{r}
+# Penalties per match
+all_penalties %>% group_by(MatchId) %>% 
+  summarise(penalties_per_match = n())
+```
+
+#### What's the average number of penalty decisions per match (both teams)?
+
+```{r}
+
+# Average for all matches (both teams)
+mean((all_penalties %>% group_by(MatchId) %>% 
+  summarise(penalties_per_match = n()))$penalties_per_match)
+
+```
+
+#### What's the ratio of penalty decisions (kick for goal, kick for touch, tap)?
+- not sure how the 2nd penalty and penalty try factor into the rules, its a small number so maybe I'll just exclude them    
+- of course the highest proportion goes to kick for touch at 57% and 29% tap  
+- 12% of penalties, the team opted for the penalty goal  
+- ~9% of all kicks for goal missed the mark   
+- 0.6% of kick for touch missed  
+
+```{r}
+
+data.frame(table(all_penalties$Qualifier2),prop.table(table(all_penalties$Qualifier2)))
+
+```
+
+
+```{r}
+
+all_penalties_attacking <- all_penalties %>% filter(ZonePlayer <=28)
+
+data.frame(table(all_penalties_attacking$Qualifier2),prop.table(table(all_penalties_attacking$Qualifier2)))
+
+
+```
+```{r}
+all_penalties
+
+
+```
+
+
+```{r}
+
+kick_forgoal_perc <- all_penalties %>% group_by(ZonePlayer,ChannelPlayer,SectionPlayer) %>% 
+  summarise(kickforgoal_perc = sum(Qualifier2 %like% 'Kick for goal')/n())
+
+kick_forgoal_perc <- kick_forgoal_perc %>% ungroup() %>% 
+  mutate(SectionPlayer=as.factor(SectionPlayer),
+         ChannelPlayer=as.factor(ChannelPlayer))
+
+ord_channels <- c("SR","NR","R","C","L","NL","SL")
+ord_sections <- c("-0", "-10", "-20","-30","-40","-50","-60","-70","-80","-90", "-100","-110")
+
+kick_forgoal_perc$SectionPlayer <- factor(kick_forgoal_perc$SectionPlayer, levels = ord_sections,ordered = T)
+kick_forgoal_perc$ChannelPlayer <- factor(kick_forgoal_perc$ChannelPlayer, levels = ord_channels,ordered = T)
+
+ggplot(kick_forgoal_perc,aes(x= SectionPlayer,y=ChannelPlayer)) + 
+  geom_tile(aes(fill = kickforgoal_perc)) +scale_fill_continuous(high = "#132B43", low = "#56B1F7")+
+  geom_text(aes(label = round(kickforgoal_perc, 2)))
+
+
+```
+
+
+
+#### Let's look all penalty goals and conversions and see what the accuracy is for all teams for different areas of the field
+- EventName contains 'Penalty goal' (OK or missed)
+- EventName contains 'Conversion' (OK or missed)
+- Use XmPlayer and YmPlayer (normalised to player tagged to the event)
+
+```{r}
+
+all_pen_conv <- df_trx %>% 
+  filter(EventName %like% 'Penalty goal -' | EventName %like% 'Conversion -')
+
+data.frame(table(all_pen_conv$EventName),prop.table(table(all_pen_conv$EventName)))
+
+```
+
+As seen above, most of the examples we have are of conversions. But we'll just make the assumption that the difficulty/accuracy should be similar for both penalty goals and conversions. Note: What is 'Conversion - 8pt OK' - found on google, potential 8pt try if try scorer is fouled after scoring try.  
+
+#### Add the conversions and penalties together for overall accuracy
+
+```{r}
+
+cat('Overall accuracy of goal kicks: ', (1960+2+691)/nrow(all_pen_conv))
+
+```
+
+#### How many unique players have taken kicks in the last 2 seasons?
+
+```{r}
+
+length(unique(all_pen_conv$PlayerId))
+
+```
+
+#### Average number of kicks made by each kicker?
+- Very high variability in the number of kicks. there is definitely 1 main kicker and couple of backup kickers in each team.
+- Therefore, let's just simplify things and do Penalty Probability at the Team level instead of the kicker level.
+
+```{r}
+all_pen_conv %>% group_by(ClubId,PlayerId) %>% 
+  summarise(total_kicks = n())
+```
+
+
+```{r}
+
+ggplot((all_pen_conv %>% group_by(ClubId,PlayerId) %>% 
+  summarise(total_kicks = n())),aes(y=total_kicks)) +geom_boxplot()
+
+```
+
+
+#### Average number of kickers per team in the last 2 seasons?
+
+```{r}
+
+mean((all_pen_conv %>% group_by(ClubId) %>% 
+  summarise(num_kickers = n_distinct(PlayerId)))$num_kickers)
+
+```
+
+
+
+#### Now get accuracy for each zone on field  
+- group by ZonePlayer
+
+* Need to correct in the Section numbers: Zones 78-84 seem to have been mapped to section '-0', but they should be section '-110'
+
+```{r}
+
+acc_per_zone <-  all_pen_conv %>% 
+  group_by(ZonePlayer,ChannelPlayer,SectionPlayer) %>%
+  summarise(total_kicks = n(),
+            zone_accuracy = sum(EventName %like% 'OK')/n())
+
+# Correct an error in section numbers
+acc_per_zone <- acc_per_zone %>% 
+  filter(!ZonePlayer %in% seq(78,84))
+
+acc_per_zone <- acc_per_zone %>% ungroup() %>% 
+  mutate(SectionPlayer=as.factor(SectionPlayer),
+         ChannelPlayer=as.factor(ChannelPlayer))
+
+acc_per_zone
+
+```
+
+Looks like most zones that conversions or penalty goals are kicked from from are from ~40m up to ~10m out from try line. There seem to be 4 kicks that are in zones 79-84, which doesn't make sense as these are inside the in-goal area (maybe mistakes in the data).  
+
+
+#### Scatterplot of where kicks are made from
+- Conversions have a nice curve in 10-30m in front of goal posts  
+- Some dirtiness in the data, where the xy-coordinates were not normalised properly. Also conversion kicks that are inside ingoal area
+
+```{r}
+
+ggplot(all_pen_conv,aes(x= XmPlayer,y=YmPlayer,color=EventName)) + geom_point()
+
+```
+
+#### Heatmap of accuracies by zone  
+- Probs ignore anything smaller than section -50
+
+```{r}
+ord_channels <- c("SR","NR","R","C","L","NL","SL")
+ord_sections <- c("-0", "-10", "-20","-30","-40","-50","-60","-70","-80","-90", "-100","-110")
+
+acc_per_zone$SectionPlayer <- factor(acc_per_zone$SectionPlayer, levels = ord_sections,ordered = T)
+acc_per_zone$ChannelPlayer <- factor(acc_per_zone$ChannelPlayer, levels = ord_channels,ordered = T)
+
+ggplot(acc_per_zone %>% filter(total_kicks>=5),aes(x= SectionPlayer,y=ChannelPlayer)) + 
+  geom_tile(aes(fill = zone_accuracy)) + scale_fill_gradient(low = "#CFF4D2", high = "#205072") + #scale_fill_continuous(high = "#132B43", low = "#56B1F7")+
+  geom_text(aes(label = round(zone_accuracy, 2)))
+
+```
+
+#### Total Kick Attempts by Zone
+
+```{r}
+
+ggplot(acc_per_zone,aes(x= SectionPlayer,y=ChannelPlayer)) + 
+  geom_tile(aes(fill = total_kicks)) +scale_fill_continuous(high = "#132B43", low = "#56B1F7")+
+  geom_text(aes(label = total_kicks))
+
+```
+
+#### Accuracy per Club per Zone for Tableau
+- Grouping by club ensures we also take into account the kicker accuracy 
+
+```{r}
+
+team_acc_per_zone <-  all_pen_conv %>% 
+  group_by(ZonePlayer,ChannelPlayer,SectionPlayer,ClubId) %>%
+  summarise(total_kicks = n(),
+            zone_accuracy = sum(EventName %like% 'OK')/n())
+
+# Remove zones that are over the try line
+team_acc_per_zone <- team_acc_per_zone %>% 
+  filter(!ZonePlayer %in% seq(78,84))
+
+team_acc_per_zone <- team_acc_per_zone %>% ungroup() %>% 
+  mutate(SectionPlayer=as.factor(SectionPlayer),
+         ChannelPlayer=as.factor(ChannelPlayer))
+
+team_acc_per_zone
+
+```
+
+Which teams/zones have fewer than 5 total kicks in the whole dataset?
+- as expected low numbers 
+
+```{r}
+team_acc_per_zone %>% filter(total_kicks<5)
+```
+
+#### Or Should We Do Club Accuracy Multiplied by Overall Zone Accuracy?
+- However, this artificially reduces the actual accuracy measure for every team
+ 
+- Best Goal Kicking Club: Penrith Panthers 
+- Worst Goal Kicking Club: West Tigers
+
+```{r}
+
+acc_per_club <-  all_pen_conv %>% 
+  group_by(ClubId) %>%
+  summarise(total_kicks = n(),
+            club_accuracy = sum(EventName %like% 'OK')/n()) %>% 
+  arrange(club_accuracy)
+
+acc_per_club
+
+```
+
+#### Add XY coords to table
+
+```{r}
+
+team_acc_per_zone <- team_acc_per_zone %>% 
+  mutate(ZoneX = case_when(ChannelPlayer=="SL" ~ 10,
+                           ChannelPlayer=="NL" ~ 20,
+                           ChannelPlayer=="L" ~ 30,
+                           ChannelPlayer=="C" ~ 40,
+                           ChannelPlayer=="R" ~ 50,
+                           ChannelPlayer=="NR"~ 60,
+                           ChannelPlayer=="SR"~70),
+         ZoneY = -as.integer(as.character(SectionPlayer)))
+
+
+```
+ 
+ 
+#### Save datasets/outputs
+
+```{r}
+
+# all_pen_conv %>% write_csv("C:\\Users\\martin.cheung\\OneDrive - Accenture\\NRL DataJam 2019\\output\\penalties_conversions.csv")
+# 
+# acc_per_zone %>% write_csv("C:\\Users\\martin.cheung\\OneDrive - Accenture\\NRL DataJam 2019\\output\\kick_acc_per_zone.csv")
+
+team_acc_per_zone %>% write_csv("C:\\Users\\martin.cheung\\OneDrive - Accenture\\NRL DataJam 2019\\output\\club_kicking_acc_per_zone.csv")
+
+```
+
+
+
